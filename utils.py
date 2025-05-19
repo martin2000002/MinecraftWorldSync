@@ -6,13 +6,16 @@ import os
 import platform
 import uuid
 import shutil
+import hashlib
 from pathlib import Path
 from datetime import datetime
 
 def get_computer_id():
     """
-    Genera un identificador único para la computadora basado en hardware.
+    Genera un identificador único para la computadora.
     Si no existe, crea uno nuevo y lo guarda.
+    Ahora genera un identificador corto (máximo 5 caracteres) para evitar
+    problemas con rutas demasiado largas.
     """
     id_file = Path(os.path.expanduser("~")) / ".minecraft_sync_id"
     
@@ -20,9 +23,12 @@ def get_computer_id():
         with open(id_file, 'r') as f:
             return f.read().strip()
     else:
-        # Generar ID basado en información de hardware + un UUID
+        # Generar un hash corto basado en información de hardware
         system_info = platform.node() + platform.processor()
-        new_id = f"{system_info.replace(' ', '-')}_{uuid.uuid4().hex[:8]}"
+        
+        # Usar hashlib para generar un identificador corto pero único
+        hash_obj = hashlib.md5(system_info.encode())
+        new_id = hash_obj.hexdigest()[:5]  # Solo usar los primeros 5 caracteres del hash
         
         # Guardar el ID para uso futuro
         with open(id_file, 'w') as f:
@@ -59,19 +65,35 @@ def save_json(file_path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def copy_directory(src, dst):
-    """Copia el contenido de un directorio a otro."""
+    """
+    Copia el contenido de un directorio a otro.
+    Maneja mejor los errores para proveer más información.
+    """
     # Asegurar que el directorio destino exista
     ensure_dir_exists(dst)
+    
+    errors = []
     
     # Copiar archivos y subdirectorios
     for item in os.listdir(src):
         s = os.path.join(src, item)
         d = os.path.join(dst, item)
         
-        if os.path.isdir(s):
-            shutil.copytree(s, d, dirs_exist_ok=True)
-        else:
-            shutil.copy2(s, d)
+        try:
+            if os.path.isdir(s):
+                ensure_dir_exists(d)  # Asegurar que el directorio destino existe primero
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                # Asegurar que el directorio padre del archivo destino exista
+                ensure_dir_exists(os.path.dirname(d))
+                shutil.copy2(s, d)
+        except Exception as e:
+            print(f"No se pudo copiar {s} a {d}: {e}")
+            errors.append((s, d, str(e)))
+    
+    if errors:
+        print(f"Error copiando directorio: {len(errors)} errores")
+        raise Exception(errors)
 
 def get_timestamp():
     """Obtiene una marca de tiempo en formato legible."""
