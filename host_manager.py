@@ -8,8 +8,9 @@ from pathlib import Path
 
 import config
 from utils import (
-    get_computer_id, ensure_dir_exists, load_json, save_json,
-    copy_directory, get_timestamp, compare_timestamps
+    get_computer_id, get_computer_display_name, ensure_dir_exists, 
+    load_json, save_json, copy_directory, get_timestamp, compare_timestamps,
+    compare_directories
 )
 
 class HostManager:
@@ -18,6 +19,7 @@ class HostManager:
     def __init__(self):
         """Inicializa el gestor de mundos."""
         self.computer_id = get_computer_id()
+        self.computer_display_name = get_computer_display_name()
         
         # Asegurar que existan las carpetas necesarias
         ensure_dir_exists(config.WORLD_SYNC_DIR)
@@ -49,6 +51,7 @@ class HostManager:
             "exists_locally": False,
             "exists_in_sync": False,
             "has_latest_version": False,
+            "has_local_changes": False,
             "latest_version_info": None,
             "local_version_info": None,
             "conflicts": []
@@ -75,12 +78,42 @@ class HostManager:
                 # Comparar versiones basadas en timestamp
                 if local_control.get("timestamp") == latest_info.get("timestamp"):
                     result["has_latest_version"] = True
+                    
+                    # Incluso si tenemos la última versión, verificar si hay cambios locales
+                    if result["exists_locally"]:
+                        # Comparar los archivos locales con la copia sincronizada
+                        local_sync_path = self.computer_dir / world_name / "minecraft_saves_data"
+                        
+                        if local_sync_path.exists():
+                            dir_comparison = compare_directories(local_world_path, local_sync_path)
+                            result["has_local_changes"] = not dir_comparison["identical"]
+                            
+                            # Añadir información de cambios a los detalles
+                            if not dir_comparison["identical"]:
+                                result["local_changes_details"] = dir_comparison["differences"]
+                                result["has_important_changes"] = dir_comparison["has_important_changes"]
+                
                 elif local_control.get("base_commit") != latest_info.get("commit_id"):
                     # Posible conflicto: versiones basadas en diferentes commits
                     result["conflicts"].append({
                         "type": "base_commit_mismatch",
                         "message": "La versión local está basada en un commit diferente al de la última versión"
                     })
+            
+            # Aún si no tenemos metadatos locales, si el mundo existe localmente, verificar cambios
+            elif result["exists_locally"]:
+                # Buscar el mundo en otros dispositivos para comparar
+                latest_pc_id = latest_info.get("pc_id")
+                if latest_pc_id:
+                    latest_sync_path = config.WORLD_SYNC_DIR / latest_pc_id / world_name / "minecraft_saves_data"
+                    if latest_sync_path.exists():
+                        dir_comparison = compare_directories(local_world_path, latest_sync_path)
+                        result["has_local_changes"] = not dir_comparison["identical"]
+                        
+                        # Añadir información de cambios a los detalles
+                        if not dir_comparison["identical"]:
+                            result["local_changes_details"] = dir_comparison["differences"]
+                            result["has_important_changes"] = dir_comparison["has_important_changes"]
             
             # Detectar conflictos potenciales (commits paralelos)
             for pc_id in os.listdir(config.WORLD_SYNC_DIR):
@@ -91,17 +124,29 @@ class HostManager:
                 if pc_control_path.exists():
                     pc_control = load_json(pc_control_path)
                     
+                    # Obtener nombre de la computadora si está disponible
+                    pc_name = pc_control.get("pc_name", pc_id)
+                    
                     # Si hay dos PC con el mismo base_commit pero diferente commit_id,
                     # podría haber un conflicto de versiones paralelas
-                    if (pc_control.get("base_commit") == local_control.get("base_commit") and
-                        pc_control.get("commit_id") != local_control.get("commit_id") and
-                        pc_control.get("timestamp") != local_control.get("timestamp")):
+                    if result["local_version_info"] and (
+                        pc_control.get("base_commit") == result["local_version_info"].get("base_commit") and
+                        pc_control.get("commit_id") != result["local_version_info"].get("commit_id") and
+                        pc_control.get("timestamp") != result["local_version_info"].get("timestamp")):
                         result["conflicts"].append({
                             "type": "parallel_commits",
-                            "message": f"La PC {pc_id} tiene una versión diferente basada en el mismo commit base",
+                            "message": f"La PC '{pc_name}' tiene una versión diferente basada en el mismo commit base",
                             "pc_id": pc_id,
+                            "pc_name": pc_name,
                             "pc_info": pc_control
                         })
+        else:
+            # Aunque no exista en el sistema, verificar si hay copias de seguridad locales
+            # que puedan tener la misma estructura
+            local_backup_path = self.computer_dir / world_name
+            if local_backup_path.exists() and (local_backup_path / "control.json").exists():
+                local_control = load_json(local_backup_path / "control.json")
+                result["local_version_info"] = local_control
         
         return result
     
@@ -124,6 +169,15 @@ class HostManager:
         
         # Ruta local donde se guardarán los datos
         local_world_path = config.MINECRAFT_SAVES_DIR / world_name
+        
+        # Verificar si hay cambios locales que no se han sincronizado
+        if local_world_path.exists():
+            local_sync_path = self.computer_dir / world_name / "minecraft_saves_data"
+            if local_sync_path.exists():
+                dir_comparison = compare_directories(local_world_path, local_sync_path)
+                if not dir_comparison["identical"]:
+                    backup_path = config.MINECRAFT_SAVES_DIR / f"{world_name}_backup_{get_timestamp().replace(':', '-').replace(' ', '_')}"
+                    shutil.copytree(local_world_path, backup_path)
         
         # Crear copia de seguridad si el mundo ya existe localmente
         if local_world_path.exists():
@@ -148,7 +202,8 @@ class HostManager:
             "base_commit": latest_info.get("commit_id"),
             "comment": "Descargado de la última versión",
             "timestamp": get_timestamp(),
-            "original_timestamp": latest_info.get("timestamp")
+            "original_timestamp": latest_info.get("timestamp"),
+            "pc_name": self.computer_display_name
         }
         save_json(self.computer_dir / world_name / "control.json", local_control)
         
@@ -185,7 +240,8 @@ class HostManager:
             "commit_id": new_commit_id,
             "base_commit": base_commit,
             "comment": comment or "Actualización",
-            "timestamp": timestamp
+            "timestamp": timestamp,
+            "pc_name": self.computer_display_name
         }
         
         # Copiar mundo local a carpeta de sincronización
@@ -205,6 +261,7 @@ class HostManager:
         self.mundos["mundos"][world_name] = {
             "commit_id": new_commit_id,
             "pc_id": self.computer_id,
+            "pc_name": self.computer_display_name,
             "timestamp": timestamp,
             "comment": comment or "Actualización"
         }
@@ -228,13 +285,15 @@ class HostManager:
             return False, f"No se encontró control.json para el mundo en la computadora {chosen_pc_id}"
         
         chosen_control = load_json(chosen_control_path)
+        pc_name = chosen_control.get("pc_name", chosen_pc_id)
         
         # Actualizar mundos.json con la información de la versión elegida
         self.mundos["mundos"][world_name] = {
             "commit_id": chosen_control.get("commit_id"),
             "pc_id": chosen_pc_id,
+            "pc_name": pc_name,
             "timestamp": chosen_control.get("timestamp"),
-            "comment": f"Conflicto resuelto: se eligió la versión de {chosen_pc_id}"
+            "comment": f"Conflicto resuelto: se eligió la versión de {pc_name}"
         }
         save_json(config.MUNDOS_JSON, self.mundos)
         
@@ -242,4 +301,4 @@ class HostManager:
         if chosen_pc_id != self.computer_id:
             return self.download_world(world_name)
         
-        return True, f"Conflicto resuelto: se eligió la versión de {chosen_pc_id}"
+        return True, f"Conflicto resuelto: se eligió la versión de {pc_name}"

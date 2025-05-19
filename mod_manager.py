@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import config
-from utils import ensure_dir_exists, load_json, save_json
+from utils import ensure_dir_exists, load_json, save_json, get_computer_display_name
 
 class ModManager:
     """Clase para gestionar la sincronización de mods de Minecraft."""
@@ -18,6 +18,9 @@ class ModManager:
         
         # Cargar lista de mods
         self.mods = load_json(config.MODS_JSON, {"mods": {}})
+        
+        # Obtener nombre del dispositivo
+        self.computer_name = get_computer_display_name()
     
     def get_mod_status(self):
         """
@@ -26,7 +29,8 @@ class ModManager:
         """
         return {
             "status": "in_development",
-            "message": "La funcionalidad de gestión de mods está en desarrollo."
+            "message": "La funcionalidad de gestión de mods está en desarrollo.",
+            "device_name": self.computer_name
         }
     
     def get_available_mods(self):

@@ -9,7 +9,10 @@ from tkinter import ttk, messagebox, simpledialog
 from pathlib import Path
 
 import config
-from utils import ensure_dir_exists, get_computer_id
+from utils import (
+    ensure_dir_exists, get_computer_id, get_computer_name, 
+    save_computer_name, get_computer_display_name
+)
 from host_manager import HostManager
 from mod_manager import ModManager
 
@@ -25,6 +28,9 @@ class MinecraftSyncApp:
         
         # Identificar la ruta de OneDrive
         self.setup_onedrive_path()
+        
+        # Solicitar nombre de la computadora si es la primera vez
+        self.check_computer_name()
         
         # Inicializar gestores
         try:
@@ -42,9 +48,27 @@ class MinecraftSyncApp:
         # Mostrar pantalla inicial
         self.show_screen(config.SCREEN_MAIN)
         
-        # Mostrar ID de computadora
+        # Mostrar ID de computadora (o nombre si está disponible)
         self.computer_id = get_computer_id()
-        self.status_label.config(text=f"ID de computadora: {self.computer_id}")
+        self.computer_name = get_computer_display_name()
+        self.status_label.config(text=f"Dispositivo: {self.computer_name}")
+    
+    def check_computer_name(self):
+        """Verifica si existe un nombre para la computadora y solicita uno si no."""
+        if get_computer_name() is None:
+            name = simpledialog.askstring(
+                "Nombre del dispositivo", 
+                "Esta es la primera vez que ejecutas Minecraft World Sync.\n"
+                "Por favor, ingresa un nombre para este dispositivo\n"
+                "(ejemplo: 'PC de Juan', 'Laptop de Ana'):",
+                parent=self.root
+            )
+            
+            # Si el usuario cancela, usar un nombre por defecto
+            if name is None or name.strip() == "":
+                name = f"Dispositivo {get_computer_id()}"
+            
+            save_computer_name(name)
     
     def setup_onedrive_path(self):
         """Configura la ruta a la carpeta compartida de OneDrive."""
@@ -296,7 +320,9 @@ class MinecraftSyncApp:
             if status["exists_in_sync"]:
                 latest_info = status["latest_version_info"]
                 info_text += f"Última actualización: {latest_info.get('timestamp', 'Desconocido')}\n"
-                info_text += f"Actualizado por: {latest_info.get('pc_id', 'Desconocido')}\n"
+                # Mostrar nombre de PC en vez de ID
+                pc_name = latest_info.get('pc_name', latest_info.get('pc_id', 'Desconocido'))
+                info_text += f"Actualizado por: {pc_name}\n"
                 info_text += f"Comentario: {latest_info.get('comment', 'Sin comentario')}\n\n"
             
             if status["exists_locally"]:
@@ -314,6 +340,31 @@ class MinecraftSyncApp:
                 else:
                     info_text += "Versión: No existe en el sistema de sincronización\n"
                     self.download_button.config(state=tk.DISABLED)
+
+            if status["has_local_changes"]:
+                if status["has_important_changes"]:
+                    info_text += "\n⚠️ Tienes cambios locales importantes que no han sido sincronizados\n"
+                else:
+                    info_text += "\nTienes cambios locales que no han sido sincronizados\n"
+                
+                # Opcional: mostrar detalle de cambios
+                if "local_changes_details" in status:
+                    details = status["local_changes_details"]
+                    
+                    # Mostrar resumen de cambios
+                    files_changed = len(details.get("modified_files", []))
+                    files_added = len(details.get("files_only_in_dir1", []))
+                    files_removed = len(details.get("files_only_in_dir2", []))
+                    
+                    if files_added > 0:
+                        info_text += f"  • {files_added} archivo(s) nuevo(s)\n"
+                    if files_changed > 0:
+                        info_text += f"  • {files_changed} archivo(s) modificado(s)\n"
+                    if files_removed > 0:
+                        info_text += f"  • {files_removed} archivo(s) eliminado(s)\n"
+                
+                # Siempre habilitar el botón de subida si hay cambios locales
+                self.upload_button.config(state=tk.NORMAL)
             
             # Mostrar conflictos si los hay
             if status["conflicts"]:
